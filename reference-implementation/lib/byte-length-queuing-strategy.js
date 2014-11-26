@@ -9,14 +9,14 @@ export default class ByteLengthQueuingStrategy {
       throw new RangeError('highWaterMark must be nonnegative.');
     }
 
-    this.highWaterMark = highWaterMark;
+    this._highWaterMark = highWaterMark;
+  }
+
+  shouldApplyBackpressure(queueSize) {
+    return queueSize > this._highWaterMark;
   }
 
   size(chunk) {
     return chunk.byteLength;
-  }
-
-  shouldApplyBackpressure(queueSize) {
-    return queueSize > this.highWaterMark;
   }
 }

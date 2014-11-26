@@ -36,17 +36,17 @@ test('Piping through an identity transform stream will close the destination whe
 
   var ws = new WritableStream();
 
-  rs.pipeThrough(ts).pipeTo(ws).closed.then(() => {
+  rs.pipeThrough(ts).pipeTo(ws).then(() => {
     t.equal(rs.state, 'closed', 'the readable stream was closed');
     t.equal(ws.state, 'closed', 'the writable stream was closed');
   });
 });
 
-test('Piping through a default transform stream causes backpressure to be exerted after some delay', t => {
+// FIXME: expected results here will probably change as we fix https://github.com/whatwg/streams/issues/190
+// As they are now they don't make very much sense, so we will skip the test. When #190 is fixed, we should fix the
+// test and re-enable.
+test.skip('Piping through a default transform stream causes backpressure to be exerted after some delay', t => {
   t.plan(2);
-
-  // FIXME: expected results here will probably change as we fix https://github.com/whatwg/streams/issues/190
-  // As they are now they don't make very much sense
 
   // Producer: every 20 ms
   var enqueueReturnValues = [];
@@ -85,7 +85,7 @@ test('Piping through a default transform stream causes backpressure to be exerte
   });
 
   setTimeout(() => {
-    rs.pipeThrough(ts).pipeTo(ws).closed.then(() => {
+    rs.pipeThrough(ts).pipeTo(ws).then(() => {
       t.deepEqual(
         enqueueReturnValues,
         [true, true, true, true, false, false, false, false],

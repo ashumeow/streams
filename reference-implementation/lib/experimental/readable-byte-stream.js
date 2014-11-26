@@ -1,5 +1,6 @@
 var assert = require('assert');
 import * as helpers from '../helpers';
+import ReadableStream from '../readable-stream';
 
 function notifyReady(stream) {
   if (stream._state !== 'waiting') {
@@ -16,13 +17,13 @@ function errorReadableByteStream(stream, error) {
   }
 
   if (stream._state === 'waiting') {
-    stream._waitPromise_reject(error);
-    stream._waitPromise_resolve = null;
-    stream._waitPromise_reject = null;
+    stream._readyPromise_reject(error);
+    stream._readyPromise_resolve = null;
+    stream._readyPromise_reject = null;
   } else {
-    stream._waitPromise = Promise.reject(error);
-    stream._waitPromise_resolve = null;
-    stream._waitPromise_reject = null;
+    stream._readyPromise = Promise.reject(error);
+    stream._readyPromise_resolve = null;
+    stream._readyPromise_reject = null;
   }
 
   stream._state = 'errored';
@@ -37,16 +38,23 @@ export default class ReadableByteStream {
   constructor({
     start = () => {},
     readInto = () => {},
-    cancel = () => {}
+    cancel = () => {},
+    readBufferSize = undefined,
   } = {}) {
     if (typeof start !== 'function') {
-      throw new TypeError();
+      throw new TypeError('start must be a function or undefined');
     }
     if (typeof readInto !== 'function') {
-      throw new TypeError();
+      throw new TypeError('readInto must be a function or undefined');
     }
     if (typeof cancel !== 'function') {
-      throw new TypeError();
+      throw new TypeError('cancel must be a function or undefined');
+    }
+    if (readBufferSize !== undefined) {
+      readBufferSize = helpers.toInteger(readBufferSize);
+      if (readBufferSize < 0) {
+        throw new RangeError('readBufferSize must be non-negative');
+      }
     }
 
     this._state = 'waiting';
@@ -54,9 +62,11 @@ export default class ReadableByteStream {
     this._onReadInto = readInto;
     this._onCancel = cancel;
 
-    this._waitPromise = new Promise((resolve, reject) => {
-      this._waitPromise_resolve = resolve;
-      this._waitPromise_reject = reject;
+    this._readBufferSize = readBufferSize;
+
+    this._readyPromise = new Promise((resolve, reject) => {
+      this._readyPromise_resolve = resolve;
+      this._readyPromise_reject = reject;
     });
     this._closedPromise = new Promise((resolve, reject) => {
       this._closedPromise_resolve = resolve;
@@ -75,10 +85,10 @@ export default class ReadableByteStream {
 
   readInto(arrayBuffer, offset, size) {
     if (this._state === 'waiting') {
-      throw new TypeError();
+      throw new TypeError('not ready for read');
     }
     if (this._state === 'closed') {
-      throw new TypeError();
+      throw new TypeError('stream has already been consumed');
     }
     if (this._state === 'errored') {
       throw this._storedError;
@@ -92,7 +102,7 @@ export default class ReadableByteStream {
       offset = helpers.toInteger(offset);
 
       if (offset < 0) {
-        throw new RangeError();
+        throw new RangeError('offset must be non-negative');
       }
     }
 
@@ -102,8 +112,11 @@ export default class ReadableByteStream {
       size = helpers.toInteger(size);
     }
 
-    if (size < 0 || offset + size > arrayBuffer.byteLength) {
-      throw new RangeError();
+    if (size < 0) {
+      throw new RangeError('size must be non-negative');
+    }
+    if (offset + size > arrayBuffer.byteLength) {
+      throw new RangeError('the specified range is out of bounds for arrayBuffer');
     }
 
     var bytesRead;
@@ -117,7 +130,7 @@ export default class ReadableByteStream {
     bytesRead = Number(bytesRead);
 
     if (isNaN(bytesRead) || bytesRead < -2 || bytesRead > size) {
-      var error = new RangeError();
+      var error = new RangeError('readInto of underlying source returned invalid value');
       errorReadableByteStream(this, error);
       throw error;
     }
@@ -132,9 +145,9 @@ export default class ReadableByteStream {
 
     if (bytesRead === -2) {
       this._state = 'waiting';
-      this._waitPromise = new Promise((resolve, reject) => {
-        this._waitPromise_resolve = resolve;
-        this._waitPromise_reject = reject;
+      this._readyPromise = new Promise((resolve, reject) => {
+        this._readyPromise_resolve = resolve;
+        this._readyPromise_reject = reject;
       });
 
       return 0;
@@ -143,8 +156,28 @@ export default class ReadableByteStream {
     return bytesRead;
   }
 
-  get wait() {
-    return this._waitPromise;
+  read() {
+    if (this._readBufferSize === undefined) {
+      throw new TypeError('readBufferSize is not configured');
+    }
+
+    var arrayBuffer = new ArrayBuffer(this._readBufferSize);
+    var bytesRead = this.readInto(arrayBuffer, 0, this._readBufferSize);
+    // This code should be updated to use ArrayBuffer.prototype.transfer when
+    // it's ready.
+    var resizedArrayBuffer = arrayBuffer.slice(0, bytesRead);
+    return resizedArrayBuffer;
+  }
+
+  // Note: We plan to make this more efficient in the future. But for now this
+  // implementation suffices to show interoperability with a generic
+  // WritableStream.
+  pipeTo(dest, { preventClose, preventAbort, preventCancel } = {}) {
+    ReadableStream.prototype.pipeTo.call(this, dest, {preventClose, preventAbort, preventCancel});
+  }
+
+  get ready() {
+    return this._readyPromise;
   }
 
   cancel(reason) {
@@ -179,9 +212,9 @@ export default class ReadableByteStream {
   }
 
   _resolveWaitPromise(value) {
-    this._waitPromise_resolve(value);
-    this._waitPromise_resolve = null;
-    this._waitPromise_reject = null;
+    this._readyPromise_resolve(value);
+    this._readyPromise_resolve = null;
+    this._readyPromise_reject = null;
   }
 
   _resolveClosedPromise(value) {

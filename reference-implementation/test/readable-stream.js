@@ -12,24 +12,25 @@ test('ReadableStream can be constructed with no arguments', t => {
 });
 
 test('ReadableStream instances have the correct methods and properties', t => {
-  t.plan(8);
+  t.plan(9);
 
   var rs = new ReadableStream();
 
   t.equal(typeof rs.read, 'function', 'has a read method');
-  t.equal(typeof rs.wait, 'function', 'has a wait method');
   t.equal(typeof rs.cancel, 'function', 'has an cancel method');
   t.equal(typeof rs.pipeTo, 'function', 'has a pipeTo method');
   t.equal(typeof rs.pipeThrough, 'function', 'has a pipeThrough method');
 
   t.equal(rs.state, 'waiting', 'state starts out waiting');
 
+  t.ok(rs.ready, 'has a ready property');
+  t.ok(rs.ready.then, 'ready property is a thenable');
   t.ok(rs.closed, 'has a closed property');
   t.ok(rs.closed.then, 'closed property is thenable');
 });
 
-test(`ReadableStream closing puts the stream in a closed state, fulfilling the wait() and closed promises with
- undefined`, t => {
+test('ReadableStream closing puts the stream in a closed state, fulfilling the ready and closed promises with ' +
+    'undefined', t => {
   t.plan(3);
 
   var rs = new ReadableStream({
@@ -40,9 +41,9 @@ test(`ReadableStream closing puts the stream in a closed state, fulfilling the w
 
   t.equal(rs.state, 'closed', 'The stream should be in closed state');
 
-  rs.wait().then(
-    v => t.equal(v, undefined, 'wait() should return a promise fulfilled with undefined'),
-    () => t.fail('wait() should not return a rejected promise')
+  rs.ready.then(
+    v => t.equal(v, undefined, 'ready should return a promise fulfilled with undefined'),
+    () => t.fail('ready should not return a rejected promise')
   );
 
   rs.closed.then(
@@ -51,8 +52,17 @@ test(`ReadableStream closing puts the stream in a closed state, fulfilling the w
   );
 });
 
+test('ReadableStream reading a waiting stream throws a TypeError', t => {
+  t.plan(2);
+
+  var rs = new ReadableStream();
+
+  t.equal(rs.state, 'waiting');
+  t.throws(() => rs.read(), /TypeError/);
+});
+
 test('ReadableStream reading a closed stream throws a TypeError', t => {
-  t.plan(1);
+  t.plan(2);
 
   var rs = new ReadableStream({
     start(enqueue, close) {
@@ -60,11 +70,32 @@ test('ReadableStream reading a closed stream throws a TypeError', t => {
     }
   });
 
+  t.equal(rs.state, 'closed');
   t.throws(() => rs.read(), /TypeError/);
 });
 
-test(`ReadableStream reading a stream makes wait() and closed return a promise fulfilled with undefined when the stream
- is fully drained`, t => {
+test('ReadableStream reading an errored stream throws the stored error', t => {
+  t.plan(2);
+
+  var passedError = new Error('aaaugh!!');
+
+  var rs = new ReadableStream({
+    start(enqueue, close, error) {
+      error(passedError);
+    }
+  });
+
+  t.equal(rs.state, 'errored');
+  try {
+    rs.read();
+    t.fail('rs.read() didn\'t throw');
+  } catch (e) {
+    t.equal(e, passedError);
+  }
+});
+
+test('ReadableStream reading a stream makes ready and closed return a promise fulfilled with undefined when the ' +
+    'stream is fully drained', t => {
   t.plan(6);
 
   var rs = new ReadableStream({
@@ -80,9 +111,9 @@ test(`ReadableStream reading a stream makes wait() and closed return a promise f
 
   t.throws(() => rs.read(), /TypeError/);
 
-  rs.wait().then(
-    v => t.equal(v, undefined, 'wait() should return a promise fulfilled with undefined'),
-    () => t.fail('wait() should not return a rejected promise')
+  rs.ready.then(
+    v => t.equal(v, undefined, 'ready should return a promise fulfilled with undefined'),
+    () => t.fail('ready should not return a rejected promise')
   );
 
   rs.closed.then(
@@ -103,9 +134,9 @@ test('ReadableStream avoid redundant pull call', t => {
     }
   });
 
-  rs.wait();
-  rs.wait();
-  rs.wait();
+  rs.ready;
+  rs.ready;
+  rs.ready;
 
   // Use setTimeout to ensure we run after any promises.
   setTimeout(() => {
@@ -123,7 +154,7 @@ test('ReadableStream start throws an error', t => {
     new ReadableStream({ start() { throw error; } });
     t.fail('Constructor didn\'t throw');
   } catch (caughtError) {
-    t.strictEqual(caughtError, error, 'error was allowed to propagate');
+    t.equal(caughtError, error, 'error was allowed to propagate');
   }
 });
 
@@ -133,7 +164,7 @@ test('ReadableStream pull throws an error', t => {
   var error = new Error('aaaugh!!');
   var rs = new ReadableStream({ pull() { throw error; } });
 
-  rs.wait().then(() => {
+  rs.ready.then(() => {
     t.fail('waiting should fail');
     t.end();
   });
@@ -143,9 +174,9 @@ test('ReadableStream pull throws an error', t => {
     t.end();
   });
 
-  rs.wait().catch(caught => {
+  rs.ready.catch(caught => {
     t.equal(rs.state, 'errored', 'state is "errored" after waiting');
-    t.equal(caught, error, 'error was passed through as rejection of wait() call');
+    t.equal(caught, error, 'error was passed through as rejection of ready');
   });
 
   rs.closed.catch(caught => {
@@ -233,7 +264,7 @@ test('ReadableStream is able to pull data repeatedly if it\'s available synchron
     }
   });
 
-  rs.wait().then(() => {
+  rs.ready.then(() => {
     var data = [];
     while (rs.state === 'readable') {
       data.push(rs.read());
@@ -244,7 +275,7 @@ test('ReadableStream is able to pull data repeatedly if it\'s available synchron
   });
 });
 
-test('ReadableStream wait() does not error when no more data is available', t => {
+test('ReadableStream ready does not error when no more data is available', t => {
   // https://github.com/whatwg/streams/issues/80
 
   t.plan(1);
@@ -262,7 +293,7 @@ test('ReadableStream wait() does not error when no more data is available', t =>
     if (rs.state === 'closed') {
       t.deepEqual(result, [1, 2, 3, 4, 5], 'got the expected 5 chunks');
     } else {
-      rs.wait().then(pump, r => t.ifError(r));
+      rs.ready.then(pump, r => t.ifError(r));
     }
   }
 });
@@ -296,7 +327,7 @@ test('ReadableStream should be able to get data sequentially from an asynchronou
       return Promise.resolve(EOF);
     }
 
-    return rs.wait().then(() => {
+    return rs.ready.then(() => {
       if (rs.state === 'readable') {
         return rs.read();
       } else if (rs.state === 'closed') {
@@ -347,14 +378,14 @@ test('ReadableStream continues returning `true` from `enqueue` if the data is re
   });
 });
 
-test('ReadableStream enqueue fails when the stream is in closing state', t => {
+test('ReadableStream enqueue fails when the stream is draining', t => {
   var rs = new ReadableStream({
     start(enqueue, close) {
       t.equal(enqueue('a'), true);
       close();
 
       t.throws(
-        () => t.equal(enqueue('b'), false),
+        () => enqueue('b'),
         /TypeError/,
         'enqueue after close must throw a TypeError'
       );
@@ -368,12 +399,53 @@ test('ReadableStream enqueue fails when the stream is in closing state', t => {
   t.end();
 });
 
+test('ReadableStream enqueue fails when the stream is closed', t => {
+  var rs = new ReadableStream({
+    start(enqueue, close) {
+      close();
+
+      t.throws(
+        () => enqueue('a'),
+        /TypeError/,
+        'enqueue after close must throw a TypeError'
+      );
+    }
+  });
+
+  t.equal(rs.state, 'closed');
+  t.end();
+});
+
+test('ReadableStream enqueue fails with the correct error when the stream is errored', t => {
+  var expectedError = new Error('i am sad');
+  var rs = new ReadableStream({
+    start(enqueue, close, error) {
+      error(expectedError);
+
+      t.throws(
+        () => enqueue('a'),
+        /i am sad/,
+        'enqueue after error must throw that error'
+      );
+    }
+  });
+
+  t.equal(rs.state, 'errored');
+  t.end();
+});
+
 test('ReadableStream if shouldApplyBackpressure throws, the stream is errored', t => {
   var error = new Error('aaaugh!!');
 
   var rs = new ReadableStream({
     start(enqueue) {
-      t.equal(enqueue('hi'), false);
+      try {
+        enqueue('hi');
+        t.fail('enqueue didn\'t throw');
+        t.end();
+      } catch (e) {
+        t.equal(e, error);
+      }
     },
     strategy: {
       size() {
@@ -387,7 +459,7 @@ test('ReadableStream if shouldApplyBackpressure throws, the stream is errored', 
   });
 
   rs.closed.catch(r => {
-    t.strictEqual(r, error);
+    t.equal(r, error);
     t.end();
   });
 });
@@ -397,7 +469,13 @@ test('ReadableStream if size throws, the stream is errored', t => {
 
   var rs = new ReadableStream({
     start(enqueue) {
-      t.equal(enqueue('hi'), false);
+      try {
+        enqueue('hi');
+        t.fail('enqueue didn\'t throw');
+        t.end();
+      } catch (e) {
+        t.equal(e, error);
+      }
     },
     strategy: {
       size() {
@@ -411,7 +489,7 @@ test('ReadableStream if size throws, the stream is errored', t => {
   });
 
   rs.closed.catch(r => {
-    t.strictEqual(r, error);
+    t.equal(r, error);
     t.end();
   });
 });
@@ -421,9 +499,9 @@ test('ReadableStream if size is NaN, the stream is errored', t => {
     start(enqueue) {
       try {
         enqueue('hi');
-        t.fail('The constructor didn\'t throw');
+        t.fail('enqueue didn\'t throw');
       } catch (error) {
-        t.strictEqual(error.constructor, RangeError);
+        t.equal(error.constructor, RangeError);
         t.end();
       }
     },
@@ -437,4 +515,44 @@ test('ReadableStream if size is NaN, the stream is errored', t => {
       }
     }
   });
+});
+
+test('ReadableStream errors in shouldApplyBackpressure prevent ready from fulfilling', t => {
+  var thrownError = new Error('size failure');
+  var callsToShouldApplyBackpressure = 0;
+  var rs = new ReadableStream({
+    start(enqueue) {
+      setTimeout(() => {
+        try {
+          enqueue('hi');
+          t.fail('enqueue didn\'t throw');
+        } catch (error) {
+          t.equal(error, thrownError, 'error thrown by enqueue should be the thrown error');
+        }
+      }, 0);
+    },
+    strategy: {
+      size() {
+        return 1;
+      },
+      shouldApplyBackpressure() {
+        if (++callsToShouldApplyBackpressure === 2) {
+          throw thrownError;
+        }
+
+        return false;
+      }
+    }
+  });
+
+  rs.ready.then(
+    () => {
+      t.fail('ready should not be fulfilled');
+      t.end();
+    },
+    e => {
+      t.equal(e, thrownError, 'ready should be rejected with the thrown error');
+      t.end();
+    }
+  );
 });
